@@ -444,6 +444,7 @@ const activityOptions = [
 let currentSection = 'explore';
 let currentView = 'list';
 let currentMonasteryIndex = 0;
+let currentUser = JSON.parse(localStorage.getItem('currentUser')) || null;
 let favorites = [];
 let map = null;
 let panoramaViewer = null;
@@ -605,6 +606,11 @@ function calculateTripCostAdvanced(params) {
 
 // Initialize App
 function initApp() {
+    if (currentUser) {
+        favorites = currentUser.favorites || [];
+        userBookings = currentUser.bookings || [];
+        updateAuthUI();
+    }
     renderMonasteries();
     setupEventListeners();
     initializeMap();
@@ -721,6 +727,10 @@ function toggleFavorite(monasteryId) {
         favorites.splice(index, 1);
     } else {
         favorites.push(monasteryId);
+    }
+    if (currentUser) {
+        currentUser.favorites = [...favorites];
+        updateUserInStorage(currentUser);
     }
     renderMonasteries();
 }
@@ -2498,11 +2508,32 @@ function renderAccountContent(tab) {
         t.onclick = () => renderAccountContent(t.dataset.tab);
     });
     
+    if (!currentUser) {
+        content.innerHTML = `
+            <div style="text-align: center; padding: 40px;">
+                <h3>Please Login</h3>
+                <p style="color: var(--color-text-secondary); margin-bottom: 20px;">You need to be logged in to view your account details.</p>
+                <button class="btn btn-primary" onclick="openAuthModal()">Login / Sign Up</button>
+            </div>
+        `;
+        return;
+    }
+
+    const headerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid var(--color-border);">
+            <div>
+                <h3 style="margin: 0;">${currentUser.name}</h3>
+                <div style="color: var(--color-text-secondary); font-size: 14px;">${currentUser.email}</div>
+            </div>
+            <button class="btn btn-secondary" onclick="logout()">Sign Out</button>
+        </div>
+    `;
+    
     if (tab === 'bookings') {
         if (userBookings.length === 0) {
-            content.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--color-text-secondary);"><h3>No Upcoming Bookings</h3><p>Your booked events will appear here.</p></div>`;
+            content.innerHTML = headerHTML + `<div style="text-align: center; padding: 40px; color: var(--color-text-secondary);"><h3>No Upcoming Bookings</h3><p>Your booked events will appear here.</p></div>`;
         } else {
-            content.innerHTML = `<div style="display: grid; gap: 16px;">
+            content.innerHTML = headerHTML + `<div style="display: grid; gap: 16px;">
                 ${userBookings.map(b => `
                     <div style="padding: 16px; border: 1px solid var(--color-card-border); border-radius: 8px; background: var(--color-surface);">
                         <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
@@ -2524,9 +2555,9 @@ function renderAccountContent(tab) {
         }
     } else if (tab === 'favorites') {
         const favs = monasteries.filter(m => favorites.includes(m.id));
-        content.innerHTML = favs.length ? `<div style="display: grid; gap: 16px;">${favs.map(m => `<div style="padding: 16px; border: 1px solid var(--color-card-border); border-radius: 8px;">${m.name}</div>`).join('')}</div>` : `<div style="text-align: center; padding: 40px;">No favorites yet.</div>`;
+        content.innerHTML = headerHTML + (favs.length ? `<div style="display: grid; gap: 16px;">${favs.map(m => `<div style="padding: 16px; border: 1px solid var(--color-card-border); border-radius: 8px; cursor: pointer;" onclick="openTour(${monasteries.indexOf(m)})"><strong>${m.name}</strong><br><span style="font-size: 12px; color: var(--color-text-secondary);">⭐ ${m.rating}</span></div>`).join('')}</div>` : `<div style="text-align: center; padding: 40px;">No favorites yet.</div>`);
     } else {
-        content.innerHTML = `<div style="text-align: center; padding: 40px;">Feature coming soon</div>`;
+        content.innerHTML = headerHTML + `<div style="text-align: center; padding: 40px;">Feature coming soon</div>`;
     }
 }
 
@@ -2584,6 +2615,10 @@ function bookItinerary(total) {
     };
 
     userBookings.push(booking);
+    if (currentUser) {
+        currentUser.bookings = userBookings;
+        updateUserInStorage(currentUser);
+    }
     
     // Reset builder
     selectedMonasteries = [];
@@ -2697,6 +2732,10 @@ function processEventBooking(eventId) {
         };
         
         userBookings.push(booking);
+        if (currentUser) {
+            currentUser.bookings = userBookings;
+            updateUserInStorage(currentUser);
+        }
         event.current_participants += count;
         renderEvents();
         
@@ -2765,6 +2804,125 @@ function handleCreateDiscussion() {
     renderDiscussions();
     closeEventModal();
     alert('Discussion posted successfully!');
+}
+
+// Auth Functions
+function openAuthModal() {
+    document.getElementById('auth-modal').classList.add('active');
+}
+
+function closeAuthModal() {
+    document.getElementById('auth-modal').classList.remove('active');
+}
+
+function switchAuthTab(tab) {
+    document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.auth-form').forEach(f => f.classList.remove('active'));
+    
+    if (tab === 'login') {
+        document.querySelectorAll('.auth-tab')[0].classList.add('active');
+        document.getElementById('login-form').classList.add('active');
+    } else {
+        document.querySelectorAll('.auth-tab')[1].classList.add('active');
+        document.getElementById('signup-form').classList.add('active');
+    }
+}
+
+function handleLogin(e) {
+    e.preventDefault();
+    const email = document.getElementById('login-email').value;
+    const password = document.getElementById('login-password').value;
+    
+    const users = JSON.parse(localStorage.getItem('users')) || [];
+    const user = users.find(u => u.email === email && u.password === password);
+    
+    if (user) {
+        currentUser = user;
+        localStorage.setItem('currentUser', JSON.stringify(user));
+        favorites = user.favorites || [];
+        userBookings = user.bookings || [];
+        closeAuthModal();
+        renderAccountContent('bookings');
+        renderMonasteries(); // Update hearts
+        updateAuthUI();
+        alert(`Welcome back, ${user.name}!`);
+    } else {
+        alert('Invalid email or password');
+    }
+}
+
+function handleSignup(e) {
+    e.preventDefault();
+    const name = document.getElementById('signup-name').value;
+    const email = document.getElementById('signup-email').value;
+    const password = document.getElementById('signup-password').value;
+    
+    const users = JSON.parse(localStorage.getItem('users')) || [];
+    
+    if (users.find(u => u.email === email)) {
+        alert('Email already exists');
+        return;
+    }
+    
+    const newUser = { name, email, password, bookings: [], favorites: [] };
+    users.push(newUser);
+    localStorage.setItem('users', JSON.stringify(users));
+    
+    currentUser = newUser;
+    localStorage.setItem('currentUser', JSON.stringify(newUser));
+    favorites = [];
+    userBookings = [];
+    
+    closeAuthModal();
+    renderAccountContent('bookings');
+    renderMonasteries();
+    updateAuthUI();
+    alert('Account created successfully!');
+}
+
+function logout() {
+    currentUser = null;
+    localStorage.removeItem('currentUser');
+    favorites = [];
+    userBookings = [];
+    renderAccountContent('bookings');
+    renderMonasteries();
+    updateAuthUI();
+    alert('Logged out successfully');
+}
+
+function updateAuthUI() {
+    const accountBtn = document.querySelector('.nav-btn[data-section="account"]');
+    if (currentUser) {
+        accountBtn.textContent = `👤 ${currentUser.name}`;
+    } else {
+        accountBtn.textContent = `👤 Account`;
+    }
+}
+
+function updateUserInStorage(user) {
+    const users = JSON.parse(localStorage.getItem('users')) || [];
+    const index = users.findIndex(u => u.email === user.email);
+    if (index !== -1) {
+        users[index] = user;
+    } else {
+        users.push(user);
+    }
+    localStorage.setItem('users', JSON.stringify(users));
+    localStorage.setItem('currentUser', JSON.stringify(user));
+}
+
+function togglePassword(inputId) {
+    const input = document.getElementById(inputId);
+    const btn = input.parentElement.querySelector('.password-toggle-btn');
+    
+    if (input.type === 'password') {
+        input.type = 'text';
+        btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>';
+    } else {
+        input.type = 'password';
+        btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+    }
 }
 
 document.addEventListener('DOMContentLoaded', initApp);
