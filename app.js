@@ -458,6 +458,7 @@ let selectedActivities = [];
 let tripStartDate = ''; // YYYY-MM-DD from #trip-start-date
 let userBookings = [];
 let userReviews = [];
+let plannedDuration = 0; // Duration set by AI or packages
 
 // Advanced Trip Planning Utilities
 function haversineDistance(lat1, lon1, lat2, lon2) {
@@ -1068,6 +1069,7 @@ function setupAIPlannerListeners() {
 function generateAIItinerary() {
     const duration = parseInt(document.getElementById('ai-duration').value);
     const pace = document.getElementById('ai-pace').value;
+    plannedDuration = duration; // Set planned duration from AI input
     
     // Logic: 
     // Relaxed: 1 site/day
@@ -1108,8 +1110,12 @@ function applyPackage(packageType) {
         adventure: [2, 3, 6, 13] // West Sikkim loop + Lake
     };
     
+    // Set predefined durations for packages
+    const durations = { weekend: 2, spiritual: 5, cultural: 7, adventure: 4 };
+    
     if (packages[packageType]) {
         selectedMonasteries = [...packages[packageType]];
+        plannedDuration = durations[packageType] || 0;
         
         // Ensure IDs exist in current data
         selectedMonasteries = selectedMonasteries.filter(id => monasteries.find(m => m.id === id));
@@ -2246,7 +2252,12 @@ function toggleMonasterySelection(id) {
 }
 
 function selectHotel(index) {
-    selectedHotels = [index]; // Single select
+    const hotelIndex = selectedHotels.indexOf(index);
+    if (hotelIndex > -1) {
+        selectedHotels.splice(hotelIndex, 1);
+    } else {
+        selectedHotels.push(index);
+    }
     renderItineraryStep();
 }
 
@@ -2260,14 +2271,19 @@ function toggleActivity(id) {
 function calculateTripCost() {
     const selectedMons = monasteries.filter(m => selectedMonasteries.includes(m.id));
     const { totalDistance } = calculateTripDistances(selectedMonasteries);
-    const duration = Math.max(1, Math.ceil(totalDistance / 150)); // Estimate 1 day per 150km
+    
+    // Use planned duration if available, otherwise estimate based on distance
+    let duration = Math.max(1, Math.ceil(totalDistance / 150));
+    if (plannedDuration > 0) duration = Math.max(plannedDuration, duration);
+    
     const nights = duration - 1;
 
     const transportRate = transportOptions[selectedTransport]?.rate || 0;
     const transportCost = totalDistance * transportRate;
 
-    const hotel = selectedHotels.length > 0 ? hotels[selectedHotels[0]] : null;
-    const accommodationCost = hotel ? hotel.price * nights : 0;
+    const selectedHotelObjects = selectedHotels.map(index => hotels[index]);
+    const avgHotelPrice = selectedHotelObjects.length > 0 ? selectedHotelObjects.reduce((sum, hotel) => sum + hotel.price, 0) / selectedHotelObjects.length : 0;
+    const accommodationCost = avgHotelPrice * nights;
 
     let activityCost = 0;
     const selectedActs = activityOptions.filter(a => selectedActivities.includes(a.id));
@@ -2570,6 +2586,7 @@ function saveItinerary() {
         hotels: selectedHotels,
         activities: selectedActivities,
         tripStartDate: startDate,
+        plannedDuration: plannedDuration,
         savedAt: new Date().toISOString()
     };
     localStorage.setItem('savedItinerary', JSON.stringify(itinerary));
@@ -2589,6 +2606,7 @@ function loadItineraryDraft() {
         selectedHotels = Array.isArray(data.hotels) ? data.hotels.filter(i => i >= 0 && i < hotels.length) : [];
         selectedActivities = Array.isArray(data.activities) ? data.activities.filter(id => activityOptions.some(a => a.id === id)) : [];
         tripStartDate = data.tripStartDate || '';
+        plannedDuration = data.plannedDuration || 0;
         const dateEl = document.getElementById('trip-start-date');
         if (dateEl) dateEl.value = tripStartDate;
         itineraryStep = 1;
@@ -2609,7 +2627,7 @@ function bookItinerary(total) {
         total: total,
         monasteries: monasteries.filter(m => selectedMonasteries.includes(m.id)).map(m => m.name),
         transport: transportOptions[selectedTransport]?.name || 'None',
-        hotel: selectedHotels.length > 0 ? hotels[selectedHotels[0]].name : 'None',
+        hotel: selectedHotels.length > 0 ? selectedHotels.map(index => hotels[index].name).join(', ') : 'None',
         activities: activityOptions.filter(a => selectedActivities.includes(a.id)).map(a => a.name),
         status: 'Confirmed'
     };
@@ -2625,6 +2643,7 @@ function bookItinerary(total) {
     selectedTransport = null;
     selectedHotels = [];
     selectedActivities = [];
+    plannedDuration = 0;
     itineraryStep = 1;
     renderItineraryStep();
 
@@ -2926,3 +2945,4 @@ function togglePassword(inputId) {
 }
 
 document.addEventListener('DOMContentLoaded', initApp);
+
