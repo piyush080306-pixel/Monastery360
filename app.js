@@ -612,6 +612,28 @@ function initApp() {
         userBookings = currentUser.bookings || [];
         updateAuthUI();
     }
+    
+    // Initialize social login
+    try {
+        if (typeof google !== 'undefined') {
+            initializeGoogleSignIn();
+        } else {
+            console.warn('Google SDK not loaded');
+        }
+    } catch (e) {
+        console.error('Error initializing Google Sign-In:', e);
+    }
+    
+    try {
+        if (typeof FB !== 'undefined') {
+            initializeFacebookSDK();
+        } else {
+            console.warn('Facebook SDK not loaded');
+        }
+    } catch (e) {
+        console.error('Error initializing Facebook SDK:', e);
+    }
+    
     renderMonasteries();
     setupEventListeners();
     initializeMap();
@@ -2554,16 +2576,16 @@ function renderAccountContent(tab) {
                     <div style="padding: 16px; border: 1px solid var(--color-card-border); border-radius: 8px; background: var(--color-surface);">
                         <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
                             <span style="font-weight: bold;">Trip #${b.id.toString().slice(-6)}</span>
-                            <span style="color: var(--color-primary); font-weight: bold;">${b.status}</span>
+                            <span style="color: var(--color-primary); font-weight: bold;">${b.status || 'Confirmed'}</span>
                         </div>
                         <div style="font-size: 14px; color: var(--color-text-secondary); margin-bottom: 8px;">
                             <div>📅 Booked on: ${new Date(b.date).toLocaleDateString()}</div>
                             <div>💰 Total: ₹${b.total.toLocaleString()}</div>
                         </div>
                         <div style="font-size: 14px;">
-                            <strong>Itinerary:</strong> ${b.monasteries.join(', ')}<br>
-                            <strong>Stay:</strong> ${b.hotel}<br>
-                            <strong>Transport:</strong> ${b.transport}
+                            <strong>Itinerary:</strong> ${(b.monasteries || []).join(', ')}<br>
+                            <strong>Stay:</strong> ${b.hotel || 'Not specified'}<br>
+                            <strong>Transport:</strong> ${b.transport || 'Not specified'}
                         </div>
                     </div>
                 `).join('')}
@@ -2675,7 +2697,7 @@ function showEventBookingForm(eventId) {
                 </div>
             </div>
 
-            <form id="booking-form" onsubmit="event.preventDefault(); processEventBooking(${event.id});">
+            <form id="booking-form" onsubmit="event.preventDefault(); proceedToPayment(${event.id});">
                 <div style="margin-bottom: 16px;">
                     <label style="display: block; margin-bottom: 8px; font-weight: 500;">Number of Participants</label>
                     <input type="number" id="participants" min="1" max="${event.max_participants - event.current_participants}" value="1" 
@@ -2695,28 +2717,492 @@ function showEventBookingForm(eventId) {
                         style="width: 100%; padding: 12px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-background); color: var(--color-text);">
                 </div>
 
-                <div style="margin-bottom: 16px;">
+                <div style="margin-bottom: 24px;">
                     <label style="display: block; margin-bottom: 8px; font-weight: 500;">Phone Number</label>
                     <input type="tel" id="phone" placeholder="+91 XXXXX XXXXX" required
                         style="width: 100%; padding: 12px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-background); color: var(--color-text);">
                 </div>
 
-                <div style="margin-bottom: 24px;">
-                    <label style="display: block; margin-bottom: 8px; font-weight: 500;">Payment Method</label>
-                    <div style="display: flex; gap: 16px;">
-                        <label style="flex: 1; padding: 12px; border: 1px solid var(--color-primary); border-radius: 8px; background: var(--color-secondary); cursor: pointer; display: flex; align-items: center; gap: 8px;">
-                            <input type="radio" name="payment" value="upi" checked>
-                            <span>UPI</span>
-                        </label>
-                    </div>
-                </div>
-
                 <button type="submit" class="btn btn-primary" style="width: 100%; padding: 16px; font-size: 16px;">
-                    Complete Booking - <span id="btn-total">₹${event.price.toLocaleString()}</span>
+                    Proceed to Payment - <span id="btn-total">₹${event.price.toLocaleString()}</span>
                 </button>
             </form>
         </div>
     `;
+}
+
+// Payment System - In-Memory Order Storage
+let paymentOrders = {};
+let currentPaymentOrder = null;
+
+function generateUniqueOrderId() {
+    return `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+}
+
+function proceedToPayment(eventId) {
+    const event = events.find(e => e.id === eventId);
+    const count = parseInt(document.getElementById('participants').value);
+    const name = document.getElementById('fullname').value;
+    const email = document.getElementById('email').value;
+    const phone = document.getElementById('phone').value;
+    
+    if (!name || !email || !phone) {
+        alert('Please fill in all details');
+        return;
+    }
+    
+    const total = count * event.price;
+    const orderId = generateUniqueOrderId();
+    
+    // Create order
+    const order = {
+        orderId: orderId,
+        eventId: eventId,
+        eventName: event.name,
+        amount: total,
+        price_per_ticket: event.price,
+        tickets: count,
+        customer: {
+            name: name,
+            email: email,
+            phone: phone
+        },
+        status: 'PENDING',
+        paymentMethod: null,
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 5 * 60000).toISOString(), // 5 minutes
+        qrExpiryTime: 300 // 5 minutes in seconds
+    };
+    
+    paymentOrders[orderId] = order;
+    currentPaymentOrder = order;
+    
+    // Close event modal, open payment modal
+    closeEventModal();
+    showPaymentMethod(orderId);
+}
+
+function showPaymentMethod(orderId) {
+    const order = paymentOrders[orderId];
+    if (!order) return;
+    
+    const paymentModal = document.getElementById('payment-modal');
+    const paymentBody = document.getElementById('payment-modal-body');
+    
+    const expiryDate = new Date(order.expiresAt);
+    
+    paymentBody.innerHTML = `
+        <div class="payment-screen">
+            <!-- QR Code Section -->
+            <div class="qr-payment-section">
+                <h3 style="margin-bottom: var(--space-12); color: var(--color-primary);">💳 UPI Payment</h3>
+                <p style="font-size: var(--font-size-sm); color: var(--color-text-secondary); margin-bottom: var(--space-16);">Scan with any UPI app</p>
+                
+                <div class="qr-code-container">
+                    <div id="qr-code-${orderId}"></div>
+                </div>
+                
+                <div class="qr-timer">
+                    QR Code expires in <strong><span id="qr-timer-${orderId}">5:00</span></strong>
+                </div>
+                
+                <button class="regenerate-qr-btn" onclick="regenerateQRCode('${orderId}')">🔄 Regenerate QR Code</button>
+                
+                <div class="payment-status-indicator pending" style="margin-top: var(--space-16);">
+                    <span class="status-dot"></span>
+                    <strong id="payment-status-${orderId}">Awaiting Payment...</strong>
+                </div>
+                
+                <div style="margin-top: var(--space-20); padding: var(--space-16); background: rgba(50, 184, 198, 0.1); border-radius: var(--radius-base); font-size: var(--font-size-sm);">
+                    <strong>Order ID:</strong> ${orderId}
+                </div>
+                
+                <button class="btn btn-secondary" onclick="manuallyCheckPaymentStatus('${orderId}')" style="width: 100%; margin-top: var(--space-12);">
+                    ✓ Payment Done? Check Status
+                </button>
+            </div>
+            
+            <!-- Payment Methods Section -->
+            <div class="payment-options-section">
+                <div class="order-summary">
+                    <div class="order-summary-row">
+                        <span>Event</span>
+                        <span><strong>${order.eventName}</strong></span>
+                    </div>
+                    <div class="order-summary-row">
+                        <span>Tickets</span>
+                        <span><strong>${order.tickets}</strong></span>
+                    </div>
+                    <div class="order-summary-row">
+                        <span>Price per Ticket</span>
+                        <span>₹${order.price_per_ticket.toLocaleString()}</span>
+                    </div>
+                    <div class="order-summary-row total">
+                        <span>Total Amount</span>
+                        <span>₹${order.amount.toLocaleString()}</span>
+                    </div>
+                </div>
+                
+                <div class="payment-option-group">
+                    <h4>🚀 Quick Payment Apps</h4>
+                    <div class="quick-pay-buttons">
+                        <button class="quick-pay-btn" onclick="launchQRPayment('${orderId}', 'google-pay')">
+                            <span class="icon">📱</span>
+                            Google Pay
+                        </button>
+                        <button class="quick-pay-btn" onclick="launchQRPayment('${orderId}', 'phonepe')">
+                            <span class="icon">📲</span>
+                            PhonePe
+                        </button>
+                        <button class="quick-pay-btn" onclick="launchQRPayment('${orderId}', 'paytm')">
+                            <span class="icon">💳</span>
+                            Paytm
+                        </button>
+                        <button class="quick-pay-btn" onclick="launchQRPayment('${orderId}', 'amazon-pay')">
+                            <span class="icon">🛒</span>
+                            Amazon Pay
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="payment-option-group">
+                    <h4>💰 Other Payment Methods</h4>
+                    <div class="other-payment-methods">
+                        <label class="payment-method-card">
+                            <input type="radio" name="payment-method" value="card" checked>
+                            <div class="payment-method-info">
+                                <div class="payment-method-name">💳 Card</div>
+                                <div class="payment-method-desc">Credit / Debit</div>
+                            </div>
+                        </label>
+                        <label class="payment-method-card">
+                            <input type="radio" name="payment-method" value="netbanking">
+                            <div class="payment-method-info">
+                                <div class="payment-method-name">🏦 Net Banking</div>
+                                <div class="payment-method-desc">All Banks</div>
+                            </div>
+                        </label>
+                        <label class="payment-method-card">
+                            <input type="radio" name="payment-method" value="wallet">
+                            <div class="payment-method-info">
+                                <div class="payment-method-name">👛 Wallet</div>
+                                <div class="payment-method-desc">MobiKwik, Freecharge</div>
+                            </div>
+                        </label>
+                        <label class="payment-method-card">
+                            <input type="radio" name="payment-method" value="emi">
+                            <div class="payment-method-info">
+                                <div class="payment-method-name">📊 EMI</div>
+                                <div class="payment-method-desc">0% Interest</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                
+                <div class="pay-now-cta">
+                    <button class="pay-now-btn" onclick="initiatePayment('${orderId}')">
+                        Pay Now - ₹${order.amount.toLocaleString()}
+                    </button>
+                    <div class="trust-indicators">
+                        <div class="trust-badge">
+                            <span class="trust-badge-icon">🔒</span>
+                            <span>SSL Secure</span>
+                        </div>
+                        <div class="trust-badge">
+                            <span class="trust-badge-icon">✓</span>
+                            <span>PCI DSS</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    paymentModal.classList.add('active');
+    
+    // Generate QR Code
+    generateQRCode(orderId);
+    
+    // Start polling for payment status every 2 seconds
+    startPaymentStatusPolling(orderId);
+    
+    // Start countdown timer
+    startQRCountdownTimer(orderId);
+}
+
+function generateQRCode(orderId) {
+    const order = paymentOrders[orderId];
+    if (!order) return;
+    
+    const qrContainer = document.getElementById(`qr-code-${orderId}`);
+    if (!qrContainer) return;
+    
+    // Clear previous QR
+    qrContainer.innerHTML = '';
+    
+    // Create UPI string (simulated)
+    const upiString = `upi://pay?pa=monastery-events@upi&pn=SikkimMonasteries&am=${order.amount}&tr=${orderId}&tn=Event%20Ticket`;
+    
+    // Generate QR code
+    new QRCode(qrContainer, {
+        text: upiString,
+        width: 250,
+        height: 250,
+        colorDark: "#000000",
+        colorLight: "#ffffff",
+        correctLevel: QRCode.CorrectLevel.H
+    });
+}
+
+function regenerateQRCode(orderId) {
+    const order = paymentOrders[orderId];
+    if (!order) return;
+    
+    // Extend expiry
+    order.expiresAt = new Date(Date.now() + 5 * 60000).toISOString();
+    order.qrExpiryTime = 300;
+    
+    // Regenerate QR
+    generateQRCode(orderId);
+    
+    // Reset timer display
+    document.getElementById(`qr-timer-${orderId}`).textContent = '5:00';
+}
+
+function startQRCountdownTimer(orderId) {
+    const timerInterval = setInterval(() => {
+        const order = paymentOrders[orderId];
+        if (!order) {
+            clearInterval(timerInterval);
+            return;
+        }
+        
+        order.qrExpiryTime--;
+        
+        const minutes = Math.floor(order.qrExpiryTime / 60);
+        const seconds = order.qrExpiryTime % 60;
+        const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        
+        const timerElement = document.getElementById(`qr-timer-${orderId}`);
+        if (timerElement) {
+            timerElement.textContent = timeStr;
+            
+            if (order.qrExpiryTime <= 60) {
+                timerElement.parentElement.classList.add('warning');
+            }
+            if (order.qrExpiryTime <= 0) {
+                timerElement.parentElement.classList.add('expired');
+            }
+        }
+        
+        if (order.qrExpiryTime < 0) {
+            clearInterval(timerInterval);
+        }
+    }, 1000);
+}
+
+function startPaymentStatusPolling(orderId) {
+    const pollInterval = setInterval(() => {
+        const order = paymentOrders[orderId];
+        if (!order || order.status !== 'PENDING') {
+            clearInterval(pollInterval);
+            return;
+        }
+        
+        checkPaymentStatus(orderId);
+    }, 2000); // Poll every 2 seconds
+}
+
+function checkPaymentStatus(orderId) {
+    const order = paymentOrders[orderId];
+    if (!order) return;
+    
+    const statusElement = document.getElementById(`payment-status-${orderId}`);
+    const indicatorElement = statusElement?.parentElement;
+    
+    // Simulated payment check - randomly succeed for demo
+    if (Math.random() < 0.02) { // 2% chance per check (roughly 10% per 5 seconds)
+        order.status = 'SUCCESS';
+        order.paymentMethod = document.querySelector('input[name="payment-method"]:checked')?.value || 'upi';
+        
+        if (statusElement) {
+            statusElement.textContent = '✓ Payment Successful!';
+        }
+        if (indicatorElement) {
+            indicatorElement.classList.remove('pending');
+            indicatorElement.classList.add('success');
+        }
+        
+        // Show success screen after brief delay
+        setTimeout(() => {
+            showPaymentSuccessScreen(orderId);
+        }, 1500);
+    }
+}
+
+function manuallyCheckPaymentStatus(orderId) {
+    const order = paymentOrders[orderId];
+    if (!order) return;
+    
+    // Simulate payment confirmation
+    order.status = 'SUCCESS';
+    order.paymentMethod = document.querySelector('input[name="payment-method"]:checked')?.value || 'upi';
+    
+    const statusElement = document.getElementById(`payment-status-${orderId}`);
+    if (statusElement) {
+        statusElement.textContent = '✓ Payment Verified!';
+        statusElement.parentElement.classList.remove('pending');
+        statusElement.parentElement.classList.add('success');
+    }
+    
+    setTimeout(() => {
+        showPaymentSuccessScreen(orderId);
+    }, 1000);
+}
+
+function launchQRPayment(orderId, app) {
+    const order = paymentOrders[orderId];
+    if (!order) return;
+    
+    // Simulate launching UPI app
+    const upiString = `upi://pay?pa=monastery-events@upi&pn=SikkimMonasteries&am=${order.amount}&tr=${orderId}&tn=Event%20Ticket`;
+    
+    console.log(`Launching ${app} with UPI string:`, upiString);
+    
+    // In real implementation, this would deep link to the UPI app
+    // For now, we'll just show a message
+    alert(`Opening ${app.replace('-', ' ')}\n\nAmount: ₹${order.amount}\n\nComplete the payment in the app and return.`);
+}
+
+function initiatePayment(orderId) {
+    const order = paymentOrders[orderId];
+    if (!order) return;
+    
+    const selectedMethod = document.querySelector('input[name="payment-method"]:checked')?.value;
+    
+    if (!selectedMethod) {
+        alert('Please select a payment method');
+        return;
+    }
+    
+    order.paymentMethod = selectedMethod;
+    
+    if (selectedMethod === 'upi') {
+        alert('Scan the QR code above with your UPI app or use Quick Pay buttons');
+    } else {
+        // Simulate payment gateway redirect
+        order.status = 'PROCESSING';
+        
+        const statusElement = document.getElementById(`payment-status-${orderId}`);
+        if (statusElement) {
+            statusElement.textContent = 'Processing payment...';
+        }
+        
+        setTimeout(() => {
+            order.status = 'SUCCESS';
+            
+            if (statusElement) {
+                statusElement.textContent = '✓ Payment Successful!';
+                statusElement.parentElement.classList.remove('pending');
+                statusElement.parentElement.classList.add('success');
+            }
+            
+            setTimeout(() => {
+                showPaymentSuccessScreen(orderId);
+            }, 500);
+        }, 2000);
+    }
+}
+
+function showPaymentSuccessScreen(orderId) {
+    const order = paymentOrders[orderId];
+    if (!order) return;
+    
+    const event = events.find(e => e.id === order.eventId);
+    const paymentBody = document.getElementById('payment-modal-body');
+    
+    // Process booking to database
+    const booking = {
+        id: Date.now(),
+        date: new Date().toISOString(),
+        eventId: order.eventId,
+        orderId: orderId,
+        eventName: event.name,
+        total: order.amount,
+        monastery: event.monastery_name,
+        status: 'Confirmed',
+        participants: order.tickets,
+        guestName: order.customer.name
+    };
+    
+    userBookings.push(booking);
+    if (currentUser) {
+        currentUser.bookings = userBookings;
+        updateUserInStorage(currentUser);
+    }
+    event.current_participants += order.tickets;
+    
+    paymentBody.innerHTML = `
+        <div class="payment-success-screen">
+            <div class="success-icon">✓</div>
+            <h2 style="margin-bottom: var(--space-8);">Payment Successful!</h2>
+            <p style="color: var(--color-text-secondary); margin-bottom: var(--space-24);">Your event ticket has been confirmed</p>
+            
+            <div class="success-details">
+                <div class="success-detail-row">
+                    <span class="success-detail-label">Order ID</span>
+                    <span class="success-detail-value">${orderId}</span>
+                </div>
+                <div class="success-detail-row">
+                    <span class="success-detail-label">Event</span>
+                    <span class="success-detail-value event-name-display">${event.name}</span>
+                </div>
+                <div class="success-detail-row">
+                    <span class="success-detail-label">Date</span>
+                    <span class="success-detail-value">${new Date(event.date).toLocaleDateString()}</span>
+                </div>
+                <div class="success-detail-row">
+                    <span class="success-detail-label">Tickets</span>
+                    <span class="success-detail-value">${order.tickets}</span>
+                </div>
+                <div class="success-detail-row">
+                    <span class="success-detail-label">Payment Method</span>
+                    <span class="success-detail-value">${order.paymentMethod?.toUpperCase() || 'UPI'}</span>
+                </div>
+                <div class="success-detail-row">
+                    <span class="success-detail-label">Total Amount</span>
+                    <span class="success-detail-value" style="color: var(--color-primary); font-size: 18px;">₹${order.amount.toLocaleString()}</span>
+                </div>
+                <div class="success-detail-row">
+                    <span class="success-detail-label">Status</span>
+                    <span class="success-detail-value" style="color: #4CAF50;">✓ Confirmed</span>
+                </div>
+            </div>
+            
+            <div style="background: rgba(76, 175, 80, 0.1); padding: var(--space-16); border-radius: var(--radius-base); margin-bottom: var(--space-24); text-align: left; font-size: var(--font-size-sm);">
+                <strong style="display: block; margin-bottom: var(--space-8);">📧 Confirmation Details</strong>
+                <p style="color: var(--color-text-secondary); margin-bottom: var(--space-8);">A confirmation email has been sent to <strong>${order.customer.email}</strong></p>
+                <p style="color: var(--color-text-secondary);">Please check your inbox for ticket details and event information.</p>
+            </div>
+            
+            <button class="pay-now-btn" onclick="completePaymentFlow('${orderId}')">Done</button>
+        </div>
+    `;
+}
+
+function completePaymentFlow(orderId) {
+    closePaymentModal();
+    closeEventModal();
+    renderEvents();
+    
+    const accountBtn = document.querySelector('.nav-btn[data-section="account"]');
+    if (accountBtn) accountBtn.click();
+    renderAccountContent('bookings');
+}
+
+function closePaymentModal() {
+    document.getElementById('payment-modal').classList.remove('active');
+    currentPaymentOrder = null;
 }
 
 function updateBookingTotal(price) {
@@ -2825,33 +3311,338 @@ function handleCreateDiscussion() {
     alert('Discussion posted successfully!');
 }
 
-// Auth Functions
+// ==================== FORM VALIDATION HELPERS ====================
+
+/**
+ * Validate email format
+ */
+function isValidEmail(email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+}
+
+/**
+ * Show form field error message
+ */
+function showFormError(fieldId, message) {
+    const errorEl = document.getElementById(fieldId + '-error');
+    if (errorEl) {
+        errorEl.textContent = message;
+        errorEl.style.display = 'block';
+    }
+    
+    const fieldEl = document.getElementById(fieldId);
+    if (fieldEl) {
+        fieldEl.style.borderColor = 'var(--color-red-500)';
+    }
+}
+
+/**
+ * Clear all form errors for a form (login or signup)
+ */
+function clearFormErrors(formType) {
+    const errors = document.querySelectorAll(`#${formType}-form [id$="-error"]`);
+    errors.forEach(err => {
+        err.style.display = 'none';
+        err.textContent = '';
+    });
+    
+    const fields = document.querySelectorAll(`#${formType}-form .input-field`);
+    fields.forEach(field => {
+        field.style.borderColor = '';
+    });
+}
+
+/**
+ * Handle social login (placeholder)
+ */
+function handleSocialLogin(provider) {
+    alert(`${provider.charAt(0).toUpperCase() + provider.slice(1)} login feature is coming soon! Please use email/password for now.`);
+}
+
+// ==================== GOOGLE & FACEBOOK OAUTH ====================
+
+/**
+ * Initialize Google Sign-In
+ * SETUP: Replace CLIENT_ID with your actual Google Client ID from Google Cloud Console
+ * See SOCIAL_LOGIN_SETUP.md for complete setup instructions
+ */
+function initializeGoogleSignIn() {
+    google.accounts.id.initialize({
+            client_id: '945694441115-40rhsflkbpcfl33m5eesv5ca8i8lb4j6.apps.googleusercontent.com',
+            callback: handleGoogleSignIn,
+            auto_select: false
+    });
+
+    const googleBtn = document.getElementById('google-signin-btn');
+    if (googleBtn) {
+        googleBtn.addEventListener('click', () => {
+            google.accounts.id.prompt((notification) => {
+                if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+                    triggerGoogleSignIn();
+                }
+            });
+        });
+    }
+}  
+
+/**
+ * Trigger Google Sign-In programmatically
+ */
+function triggerGoogleSignIn() {
+    google.accounts.id.renderButton(
+        document.getElementById('google-signin-btn'),
+        { 
+            theme: 'outline', 
+            size: 'large',
+            width: '100%'
+        }
+    );
+}
+
+/**
+ * Handle Google Sign-In callback
+ */
+function handleGoogleSignIn(response) {
+    if (!response.credential) {
+        console.error('No credential in Google sign-in response');
+        alert('Google sign-in failed. Please try again.');
+        return;
+    }
+
+    try {
+        // Decode JWT token (basic decoding without verification)
+        const payload = parseJwt(response.credential);
+        
+        if (!payload) {
+            console.error('Failed to parse Google JWT');
+            alert('Invalid Google token. Please try again.');
+            return;
+        }
+
+        const googleUser = {
+            name: payload.name,
+            email: payload.email,
+            picture: payload.picture,
+            provider: 'google',
+            sub: payload.sub
+        };
+
+        // Handle successful Google login
+        handleSocialAuthSuccess(googleUser);
+        
+    } catch (error) {
+        console.error('Error processing Google sign-in:', error);
+        alert('Error processing Google sign-in: ' + error.message);
+    }
+}
+
+/**
+ * Decode JWT token (without verification - for demo purposes)
+ */
+function parseJwt(token) {
+    try {
+        const base64Url = token.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(atob(base64).split('').map((c) => {
+            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+        return JSON.parse(jsonPayload);
+    } catch (e) {
+        console.error('Error decoding JWT:', e);
+        return null;
+    }
+}
+
+/**
+ * Initialize Facebook SDK
+ * SETUP: Replace APP_ID with your actual Facebook App ID from Facebook Developer Console
+ * See SOCIAL_LOGIN_SETUP.md for complete setup instructions
+ */
+function initializeFacebookSDK() {
+    window.fbAsyncInit = function() {
+        FB.init({
+            appId: '1234567890', // TODO: Replace with your actual Facebook App ID for production
+            xfbml: true,
+            version: 'v18.0'
+        });
+
+        // Check login status
+        FB.getLoginStatus(function(response) {
+            console.log('Facebook login status:', response.status);
+        });
+    };
+
+    const fbBtn = document.getElementById('facebook-login-btn');
+    if (fbBtn) {
+        fbBtn.addEventListener('click', handleFacebookLogin);
+    }
+}
+
+/**
+ * Handle Facebook Login
+ */
+function handleFacebookLogin(e) {
+    e.preventDefault();
+    
+    if (typeof FB === 'undefined') {
+        alert('Facebook SDK is not loaded. Please check your connection and refresh the page.');
+        return;
+    }
+    
+    try {
+        FB.login(function(response) {
+            if (response.authResponse) {
+                // Get user info
+                FB.api('/me?fields=id,name,email,picture', function(userInfo) {
+                    if (userInfo.error) {
+                        console.error('Facebook API error:', userInfo.error);
+                        alert('Failed to retrieve Facebook user information.');
+                        return;
+                    }
+                    
+                    const facebookUser = {
+                        name: userInfo.name,
+                        email: userInfo.email,
+                        picture: userInfo.picture?.data?.url,
+                        provider: 'facebook',
+                        id: userInfo.id
+                    };
+
+                    // Handle successful Facebook login
+                    handleSocialAuthSuccess(facebookUser);
+                });
+            } else {
+                console.log('User cancelled login or did not fully authorize.');
+            }
+        }, {scope: ['public_profile', 'email']});
+    } catch (e) {
+        console.error('Error during Facebook login:', e);
+        alert('Facebook login failed. Please try again.');
+    }
+}
+
+/**
+ * Handle successful social authentication
+ */
+function handleSocialAuthSuccess(socialUser) {
+    try {
+        // Validate required fields
+        if (!socialUser.email || !socialUser.name) {
+            throw new Error('Missing required user information (email or name)');
+        }
+
+        // Check if user already exists
+        const users = JSON.parse(localStorage.getItem('users')) || [];
+        let existingUser = users.find(u => u.email === socialUser.email && u.provider === socialUser.provider);
+
+        if (!existingUser) {
+            // Create new social user
+            existingUser = {
+                name: socialUser.name,
+                email: socialUser.email,
+                provider: socialUser.provider,
+                providerId: socialUser.provider === 'google' ? socialUser.sub : socialUser.id,
+                picture: socialUser.picture,
+                password: null, // Social logins don't have passwords
+                bookings: [],
+                favorites: [],
+                createdAt: new Date().toISOString()
+            };
+            
+            users.push(existingUser);
+            localStorage.setItem('users', JSON.stringify(users));
+        }
+
+        // Set current user
+        currentUser = existingUser;
+        localStorage.setItem('currentUser', JSON.stringify(existingUser));
+        favorites = existingUser.favorites || [];
+        userBookings = existingUser.bookings || [];
+
+        // Close auth modal and update UI
+        closeAuthModal();
+        renderAccountContent('bookings');
+        renderMonasteries();
+        updateAuthUI();
+
+        // Navigate to account section
+        const accountBtn = document.querySelector('.nav-btn[data-section="account"]');
+        if (accountBtn) {
+            accountBtn.click();
+        }
+
+    } catch (error) {
+        console.error('Error handling social auth:', error);
+        alert('Error logging in with social account: ' + error.message);
+    }
+}
+
+// ==================== AUTH FUNCTIONS ====================
+
 function openAuthModal() {
     document.getElementById('auth-modal').classList.add('active');
 }
 
 function closeAuthModal() {
     document.getElementById('auth-modal').classList.remove('active');
+    // Reset forms and errors
+    document.getElementById('login-form').reset();
+    document.getElementById('signup-form').reset();
+    clearFormErrors('login');
+    clearFormErrors('signup');
 }
 
 function switchAuthTab(tab) {
+    // Clear errors from both forms
+    clearFormErrors('login');
+    clearFormErrors('signup');
+    
     document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.auth-form').forEach(f => f.classList.remove('active'));
     
     if (tab === 'login') {
         document.querySelectorAll('.auth-tab')[0].classList.add('active');
         document.getElementById('login-form').classList.add('active');
+        document.getElementById('login-email').focus();
     } else {
         document.querySelectorAll('.auth-tab')[1].classList.add('active');
         document.getElementById('signup-form').classList.add('active');
+        document.getElementById('signup-name').focus();
     }
 }
 
 function handleLogin(e) {
     e.preventDefault();
-    const email = document.getElementById('login-email').value;
-    const password = document.getElementById('login-password').value;
     
+    // Clear previous errors
+    clearFormErrors('login');
+    
+    const emailInput = document.getElementById('login-email');
+    const passwordInput = document.getElementById('login-password');
+    const email = emailInput.value.trim();
+    const password = passwordInput.value;
+    
+    let isValid = true;
+    
+    // Validate email
+    if (!email) {
+        showFormError('login-email', 'Email address is required');
+        isValid = false;
+    } else if (!isValidEmail(email)) {
+        showFormError('login-email', 'Please enter a valid email address');
+        isValid = false;
+    }
+    
+    // Validate password
+    if (!password) {
+        showFormError('login-password', 'Password is required');
+        isValid = false;
+    }
+    
+    if (!isValid) return;
+    
+    // Check credentials
     const users = JSON.parse(localStorage.getItem('users')) || [];
     const user = users.find(u => u.email === email && u.password === password);
     
@@ -2860,30 +3651,88 @@ function handleLogin(e) {
         localStorage.setItem('currentUser', JSON.stringify(user));
         favorites = user.favorites || [];
         userBookings = user.bookings || [];
+        
+        // Clear form
+        document.getElementById('login-form').reset();
+        
         closeAuthModal();
         renderAccountContent('bookings');
-        renderMonasteries(); // Update hearts
+        renderMonasteries();
         updateAuthUI();
-        alert(`Welcome back, ${user.name}!`);
+        
+        // Show success message
+        const accountBtn = document.querySelector('.nav-btn[data-section="account"]');
+        if (accountBtn) {
+            accountBtn.click();
+        }
     } else {
-        alert('Invalid email or password');
+        showFormError('login-password', 'Invalid email or password');
     }
 }
 
 function handleSignup(e) {
     e.preventDefault();
-    const name = document.getElementById('signup-name').value;
-    const email = document.getElementById('signup-email').value;
-    const password = document.getElementById('signup-password').value;
     
+    // Clear previous errors
+    clearFormErrors('signup');
+    
+    const nameInput = document.getElementById('signup-name');
+    const emailInput = document.getElementById('signup-email');
+    const passwordInput = document.getElementById('signup-password');
+    
+    const name = nameInput.value.trim();
+    const email = emailInput.value.trim();
+    const password = passwordInput.value;
+    
+    let isValid = true;
+    
+    // Validate name
+    if (!name) {
+        showFormError('signup-name', 'Full name is required');
+        isValid = false;
+    } else if (name.length < 2) {
+        showFormError('signup-name', 'Name must be at least 2 characters');
+        isValid = false;
+    }
+    
+    // Validate email
+    if (!email) {
+        showFormError('signup-email', 'Email address is required');
+        isValid = false;
+    } else if (!isValidEmail(email)) {
+        showFormError('signup-email', 'Please enter a valid email address');
+        isValid = false;
+    }
+    
+    // Validate password
+    if (!password) {
+        showFormError('signup-password', 'Password is required');
+        isValid = false;
+    } else if (password.length < 6) {
+        showFormError('signup-password', 'Password must be at least 6 characters');
+        isValid = false;
+    }
+    
+    if (!isValid) return;
+    
+    // Check if email already exists
     const users = JSON.parse(localStorage.getItem('users')) || [];
     
     if (users.find(u => u.email === email)) {
-        alert('Email already exists');
+        showFormError('signup-email', 'Email already exists. Please use a different email or login.');
         return;
     }
     
-    const newUser = { name, email, password, bookings: [], favorites: [] };
+    // Create new user
+    const newUser = { 
+        name, 
+        email, 
+        password, 
+        bookings: [], 
+        favorites: [],
+        createdAt: new Date().toISOString()
+    };
+    
     users.push(newUser);
     localStorage.setItem('users', JSON.stringify(users));
     
@@ -2892,11 +3741,19 @@ function handleSignup(e) {
     favorites = [];
     userBookings = [];
     
+    // Clear form
+    document.getElementById('signup-form').reset();
+    
     closeAuthModal();
     renderAccountContent('bookings');
     renderMonasteries();
     updateAuthUI();
-    alert('Account created successfully!');
+    
+    // Navigate to account section
+    const accountBtn = document.querySelector('.nav-btn[data-section="account"]');
+    if (accountBtn) {
+        accountBtn.click();
+    }
 }
 
 function logout() {
@@ -2933,16 +3790,22 @@ function updateUserInStorage(user) {
 
 function togglePassword(inputId) {
     const input = document.getElementById(inputId);
+    if (!input) return;
+    
     const btn = input.parentElement.querySelector('.password-toggle-btn');
+    if (!btn) return;
     
     if (input.type === 'password') {
         input.type = 'text';
         btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>';
+        btn.title = 'Hide password';
     } else {
         input.type = 'password';
         btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+        btn.title = 'Show password';
     }
 }
 
 document.addEventListener('DOMContentLoaded', initApp);
+
 
