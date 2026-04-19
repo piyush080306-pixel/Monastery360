@@ -1,9 +1,3 @@
-[README.md](https://github.com/user-attachments/files/26869102/README.md)
-
-# Project Title
-
-A brief description of what this project does and who it's for
-
 # 🏔️ Monastery360 — Sikkim Virtual Monastery Explorer
 
 > A feature-rich, single-page web application for discovering, exploring, and planning visits to Sikkim's monasteries through immersive 360° virtual tours, interactive maps, AI-powered itinerary planning, and a full booking & payments system.
